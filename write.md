@@ -1,3 +1,5 @@
+# Code Flow
+
 ```cpp
 Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
   // Crete a writer for this update
@@ -89,11 +91,18 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
 ```
 
 
-#Data format
+# Data format
 
-##WriteBatch
+## WriteBatch
 
 
-|field|sequence_number | count | key_type | key_length |      key      | value_length |       value      |
-|-----|----------------|-------|----------|------------|---------------|--------------|------------------|
-|bytes|         8      |    4  |     1    |  var_int   |  key_length   |   var_int    | value_length     |
+|field|sequence_number | count | key_type |   key_length  |      key      |  value_length   |       value      |
+|-----|----------------|-------|----------|---------------|---------------|-----------------|------------------|
+|bytes|         8      |    4  |     1    |  var_int_32   |  key_length   |   var_int_32    |   value_length   |
+
+
+## MemTable
+
+| field | key_length |     key     |   tag (sequence_number << 8 \| key_type)   |   value_length   |     value   |
+|-------|------------|-------------|--------------------------------------------|------------------|-------------|
+| bytes | var_int_32 | key_length  |                      8                     |     var_int_32   | value_length|
