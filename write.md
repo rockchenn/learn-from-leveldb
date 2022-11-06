@@ -101,6 +101,12 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
 |bytes|         8      |    4  |     1    |  var_int_32   |  key_length   |   var_int_32    |   value_length   |
 
 
+## log::Writer
+| field |  checksum  | WriteBatch_data_length |  record_type(full/first/middle/last)  |      WriteBatch_data     |
+|-------|------------|------------------------|---------------------------------------|--------------------------|
+| bytes |      4     |            2           |                    1                  |  WriteBatch_data_length  |
+
+
 ## MemTable
 
 | field | key_length |     key     |   tag (sequence_number << 8 \| key_type)   |   value_length   |     value   |
