@@ -87,3 +87,13 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
   return status;
 }
 ```
+
+
+#Data format
+
+##WriteBatch
+
+
+|field|sequence_number | count | key_type | key_length |      key      | value_length |       value      |
+|-----|----------------|-------|----------|------------|---------------|--------------|------------------|
+|bytes|         8      |    4  |     1    |  var_int   |  key_length   |   var_int    | value_length     |
