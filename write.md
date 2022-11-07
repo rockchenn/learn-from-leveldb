@@ -1,6 +1,32 @@
+# Data format
+
+## WriteBatch
+
+
+|field|sequence_number | count | key_type |   key_length  |      key      |  value_length   |       value      |
+|-----|----------------|-------|----------|---------------|---------------|-----------------|------------------|
+|bytes|         8      |    4  |     1    |  var_int_32   |  key_length   |   var_int_32    |   value_length   |
+
+
+## log::Writer
+| field |  checksum  | WriteBatch_data_length |  record_type(full/first/middle/last)  |      WriteBatch_data     |
+|-------|------------|------------------------|---------------------------------------|--------------------------|
+| bytes |      4     |            2           |                    1                  |  WriteBatch_data_length  |
+
+
+## MemTable
+
+| field | key_length |     key     |   tag (sequence_number << 8 \| key_type)   |   value_length   |     value   |
+|-------|------------|-------------|--------------------------------------------|------------------|-------------|
+| bytes | var_int_32 | key_length  |                      8                     |     var_int_32   | value_length|
+
+
 # Code Flow
 
+## Entry
+
 ```cpp
+// db_impl.cc
 Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
   // Crete a writer for this update
   Writer w(&mutex_);
@@ -10,7 +36,7 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
 
   // Create and acquire a mutexlock before pushing current writer to the back of the deque writers_.
   // Only the first writer in deque shall go on the subsequent processing.
-  // Other writers will wait here until themselves become the first writer.
+  // Others will wait here until the first writer sends signal to them.
   // This behavior is controlled by condition variable in standard library.
   MutexLock l(&mutex_);
   writers_.push_back(&w);
@@ -41,7 +67,7 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
       // When leveldb write merged data to log and memtable, it's allowed to
       // add more writer to the end of deque. Thus, we can do mutex unlock here.
       mutex_.Unlock();
-      // Write to log
+      // Firstly, write to log
       status = log_->AddRecord(WriteBatchInternal::Contents(write_batch));
       bool sync_error = false;
       if (status.ok() && options.sync) {
@@ -51,7 +77,7 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
         }
       }
       if (status.ok()) {
-        // Write to memtable.
+        // Secondly, write to memtable.
         status = WriteBatchInternal::InsertInto(write_batch, mem_);
       }
       mutex_.Lock();
@@ -90,25 +116,101 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* updates) {
 }
 ```
 
+## Write Log
 
-# Data format
+```cpp
+// log_writer.cc
+// Slice is divided by blocks. Each block is 32KB.
+// If the head and tail of the slice is in this block, then mark the type as kFullType.
+// If neither head nor tail is in this block, then kMiddleType.
+// ..etc.
+Status Writer::AddRecord(const Slice& slice) {
+  size_t left = slice.size();
 
-## WriteBatch
+  // Fragment the record if necessary and emit it.  Note that if slice
+  // is empty, we still want to iterate once to emit a single
+  // zero-length record
+  do {
+    if (leftover < kHeaderSize) {
+      // Switch to a new block
+      if (leftover > 0) {
+        // Fill the trailer (literal below relies on kHeaderSize being 7)
+        dest_->Append(Slice("\x00\x00\x00\x00\x00\x00", leftover));
+      }
+      block_offset_ = 0;
+    }
 
+    if (begin && end) {
+      type = kFullType;
+    } else if (begin) {
+      type = kFirstType;
+    } else if (end) {
+      type = kLastType;
+    } else {
+      type = kMiddleType;
+    }
 
-|field|sequence_number | count | key_type |   key_length  |      key      |  value_length   |       value      |
-|-----|----------------|-------|----------|---------------|---------------|-----------------|------------------|
-|bytes|         8      |    4  |     1    |  var_int_32   |  key_length   |   var_int_32    |   value_length   |
+    s = EmitPhysicalRecord(type, ptr, fragment_length);
+  } while (s.ok() && left > 0);
+  return s;
+}
 
+Status Writer::EmitPhysicalRecord(RecordType t, const char* ptr,
+                                  size_t length) {
+  // Format the header
+  char buf[kHeaderSize];
+  buf[4] = static_cast<char>(length & 0xff);
+  buf[5] = static_cast<char>(length >> 8);
+  // ...
 
-## log::Writer
-| field |  checksum  | WriteBatch_data_length |  record_type(full/first/middle/last)  |      WriteBatch_data     |
-|-------|------------|------------------------|---------------------------------------|--------------------------|
-| bytes |      4     |            2           |                    1                  |  WriteBatch_data_length  |
+  // Write the header
+  Status s = dest_->Append(Slice(buf, kHeaderSize));
+  if (s.ok()) {
+    // Write the payload
+    s = dest_->Append(Slice(ptr, length));
+    if (s.ok()) {
+      s = dest_->Flush();
+    }
+  }
+  
+  // ...
+}
+```
 
+```cpp
+// env_posix.cc
+Status Append(const Slice& data) override {
+  // ...
+  
+  // If buffer is big enough for storing data, then done.
+  if (write_size == 0) {
+    return Status::OK();
+  }
 
-## MemTable
+  // Can't fit in buffer, so need to do at least one write.
+  Status status = FlushBuffer();
+  if (!status.ok()) {
+    return status;
+  }
 
-| field | key_length |     key     |   tag (sequence_number << 8 \| key_type)   |   value_length   |     value   |
-|-------|------------|-------------|--------------------------------------------|------------------|-------------|
-| bytes | var_int_32 | key_length  |                      8                     |     var_int_32   | value_length|
+  // Small writes go to buffer for later write to log file
+  // (by the call of Flush()/FlushBuffer() or WriteUnbuffered()).
+  if (write_size < kWritableFileBufferSize) {
+    std::memcpy(buf_, write_data, write_size);
+    pos_ = write_size;
+    return Status::OK();
+  }
+  // Large writes are written to the log file directly.
+  return WriteUnbuffered(write_data, write_size);
+}
+
+Status WriteUnbuffered(const char* data, size_t size) {
+  while (size > 0) {
+    // ::write is defined in unistd.h of c posix library.
+    // https://en.wikipedia.org/wiki/C_POSIX_library
+    ssize_t write_result = ::write(fd_, data, size);
+    // ...
+  }
+  return Status::OK();
+}
+```
