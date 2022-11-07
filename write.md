@@ -214,3 +214,114 @@ Status WriteUnbuffered(const char* data, size_t size) {
   return Status::OK();
 }
 ```
+
+## Write memtable
+
+```cpp
+// write_batch.cc
+Status WriteBatchInternal::InsertInto(const WriteBatch* b, MemTable* memtable) {
+  MemTableInserter inserter;
+  inserter.sequence_ = WriteBatchInternal::Sequence(b);
+  inserter.mem_ = memtable;
+  return b->Iterate(&inserter);
+}
+```
+
+```cpp
+// write_batch.cc
+Status WriteBatch::Iterate(Handler* handler) const {
+  Slice input(rep_);
+  // ...
+
+  // Process all the data in this WriteBatch
+  while (!input.empty()) {
+    // ...
+    switch (tag) {
+      case kTypeValue:
+        // Extact key/value from input (of Slice type),
+        // which is simply a char array which contains plain key/value.
+        if (GetLengthPrefixedSlice(&input, &key) &&
+            GetLengthPrefixedSlice(&input, &value)) {
+          handler->Put(key, value);
+        } else {
+          return Status::Corruption("bad WriteBatch Put");
+        }
+        break;
+      case kTypeDeletion:
+        if (GetLengthPrefixedSlice(&input, &key)) {
+          handler->Delete(key);
+        } else {
+          return Status::Corruption("bad WriteBatch Delete");
+        }
+        break;
+      default:
+        return Status::Corruption("unknown WriteBatch tag");
+    }
+  }
+  // ...
+}
+
+void WriteBatch::Handler::MemTableInserter::Put(const Slice& key, const Slice& value) override {
+  mem_->Add(sequence_, kTypeValue, key, value);
+  sequence_++;
+}
+```
+
+```cpp
+// memtable.cc
+void MemTable::Add(SequenceNumber s, ValueType type, const Slice& key,
+                   const Slice& value) {
+  // ...
+  
+  // table_ is the type of typedef SkipList<const char*, KeyComparator> Table;
+  table_.Insert(buf);
+}
+```
+
+![Screenshot from 2022-11-07 10-40-15](https://user-images.githubusercontent.com/4104284/200215280-b9941615-abf8-4b9e-9c7d-aa5969128ff1.png)
+[William Pugh, Skip Lists: A Probabilistic Alternative to Balanced Trees](https://15721.courses.cs.cmu.edu/spring2018/papers/08-oltpindexes1/pugh-skiplists-cacm1990.pdf)
+
+```cpp
+template <typename Key, class Comparator>
+void SkipList<Key, Comparator>::Insert(const Key& key) {
+  Node* prev[kMaxHeight];
+  // x points to the node whose key is greater or equal to the insertion key if exists.
+  // prev[0] is the previous node of level 0 for the insertion key.
+  // prev[1] is                            1
+  // ... etc.
+  Node* x = FindGreaterOrEqual(key, prev);
+
+  // Our data structure does not allow duplicate insertion
+  assert(x == nullptr || !Equal(key, x->key));
+
+  // Randomly generate a height for new node
+  int height = RandomHeight();
+  if (height > GetMaxHeight()) {
+    // if height of new node is higher than the height of skip list,
+    // then initialize those previous nodes to be head of skip list.
+    for (int i = GetMaxHeight(); i < height; i++) {
+      prev[i] = head_;
+    }
+    // It is ok to mutate max_height_ without any synchronization
+    // with concurrent readers.  A concurrent reader that observes
+    // the new value of max_height_ will see either the old value of
+    // new level pointers from head_ (nullptr), or a new value set in
+    // the loop below.  In the former case the reader will
+    // immediately drop to the next level since nullptr sorts after all
+    // keys.  In the latter case the reader will use the new node.
+    max_height_.store(height, std::memory_order_relaxed);
+  }
+
+  x = NewNode(key, height);
+  // The insertion of new node in skip list is almost the same as basic linked list.
+  // Basic linked list can be viewd as a fixed height 1 skip list and
+  // each node of skip list may have different height.
+  // Thus, re-link the connection for each level of new node.
+  for (int i = 0; i < height; i++) {
+    // NoBarrier_SetNext() suffices since we will add a barrier when
+    // we publish a pointer to "x" in prev[i].
+    x->NoBarrier_SetNext(i, prev[i]->NoBarrier_Next(i));
+    prev[i]->SetNext(i, x);
+  }
+}
+```
