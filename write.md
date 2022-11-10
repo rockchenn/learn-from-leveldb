@@ -20,6 +20,8 @@
 |-------|-----------------|----------------|--------------------------------------------|------------------|-------------|
 | bytes |   var_int_32    | key_length -8  |                      8                     |     var_int_32   | value_length|
 
+note: The term internal key comprises fields key and tag.
+
 
 # Code Flow
 
