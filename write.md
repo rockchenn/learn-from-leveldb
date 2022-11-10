@@ -274,6 +274,7 @@ void MemTable::Add(SequenceNumber s, ValueType type, const Slice& key,
   // ...
   
   // table_ is the type of typedef SkipList<const char*, KeyComparator> Table;
+  // The format of buf can be found at https://github.com/rockchenn/learn-from-leveldb/blob/main/write.md#memtable
   table_.Insert(buf);
 }
 ```
@@ -314,7 +315,7 @@ void SkipList<Key, Comparator>::Insert(const Key& key) {
 
   x = NewNode(key, height);
   // The insertion of new node in skip list is almost the same as basic linked list.
-  // Basic linked list can be viewd as a fixed height 1 skip list and
+  // Basic linked list can be viewd as a fixed height 1 skip list but
   // each node of skip list may have different height.
   // Thus, re-link the connection for each level of new node.
   for (int i = 0; i < height; i++) {
