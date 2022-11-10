@@ -16,9 +16,9 @@
 
 ## MemTable
 
-| field | key_length |     key     |   tag (sequence_number << 8 \| key_type)   |   value_length   |     value   |
-|-------|------------|-------------|--------------------------------------------|------------------|-------------|
-| bytes | var_int_32 | key_length  |                      8                     |     var_int_32   | value_length|
+| field | key_length (including key + tag) |      key       |   tag (sequence_number << 8 \| key_type)   |   value_length   |     value   |
+|-------|-----------------|----------------|--------------------------------------------|------------------|-------------|
+| bytes |   var_int_32    | key_length -8  |                      8                     |     var_int_32   | value_length|
 
 
 # Code Flow
@@ -283,6 +283,7 @@ void MemTable::Add(SequenceNumber s, ValueType type, const Slice& key,
 [William Pugh, Skip Lists: A Probabilistic Alternative to Balanced Trees](https://15721.courses.cs.cmu.edu/spring2018/papers/08-oltpindexes1/pugh-skiplists-cacm1990.pdf)
 
 ```cpp
+// skiplist.h
 template <typename Key, class Comparator>
 void SkipList<Key, Comparator>::Insert(const Key& key) {
   Node* prev[kMaxHeight];
@@ -324,5 +325,27 @@ void SkipList<Key, Comparator>::Insert(const Key& key) {
     x->NoBarrier_SetNext(i, prev[i]->NoBarrier_Next(i));
     prev[i]->SetNext(i, x);
   }
+}
+```
+
+
+```cpp
+// dbformat.cc
+int InternalKeyComparator::Compare(const Slice& akey, const Slice& bkey) const {
+  // Order by:
+  //    increasing user key (according to user-supplied comparator)
+  //    decreasing sequence number
+  //    decreasing type (though sequence# should be enough to disambiguate)
+  int r = user_comparator_->Compare(ExtractUserKey(akey), ExtractUserKey(bkey));
+  if (r == 0) {
+    const uint64_t anum = DecodeFixed64(akey.data() + akey.size() - 8);
+    const uint64_t bnum = DecodeFixed64(bkey.data() + bkey.size() - 8);
+    if (anum > bnum) {
+      r = -1;
+    } else if (anum < bnum) {
+      r = +1;
+    }
+  }
+  return r;
 }
 ```
